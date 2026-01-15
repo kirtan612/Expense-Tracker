@@ -2,14 +2,21 @@ from flask import Flask, render_template, request, redirect, session, make_respo
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, User, Expense
 from datetime import datetime
-from sqlalchemy import extract
+from sqlalchemy import extract, func
 from fpdf import FPDF
 from functools import wraps
+import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
-app.config['SECRET_KEY'] = 'super-secret-key-change-in-production'
+
+# Use environment variables for production security
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-this')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///expenses.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Admin credentials (set via environment variables)
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@expensetracker.com')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
 
 db.init_app(app)
 
@@ -26,15 +33,40 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrapper
 
+def admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if 'is_admin' not in session or not session['is_admin']:
+            flash("Access denied. Admin only.", "danger")
+            return redirect('/')
+        return f(*args, **kwargs)
+    return wrapper
+
 # ---------------- AUTH ROUTES ----------------
 
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
-        user = User.query.filter_by(email=request.form['email']).first()
-        if user and check_password_hash(user.password, request.form['password']):
+        email = request.form['email']
+        password = request.form['password']
+        
+        # Check if admin login
+        if email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
+            session['user_id'] = 0  # Special ID for admin
+            session['is_admin'] = True
+            session['email'] = ADMIN_EMAIL
+            flash("Admin login successful", "success")
+            return redirect('/admin')
+        
+        # Regular user login
+        user = User.query.filter_by(email=email).first()
+        if user and check_password_hash(user.password, password):
             session['user_id'] = user.id
+            session['is_admin'] = False
+            session['email'] = user.email
+            flash("Login successful", "success")
             return redirect('/')
+        
         flash("Invalid email or password", "danger")
     return render_template('login.html')
 
@@ -42,6 +74,11 @@ def login():
 def register():
     if request.method == 'POST':
         email = request.form['email']
+        
+        # Prevent admin email registration
+        if email == ADMIN_EMAIL:
+            flash("This email is reserved", "danger")
+            return redirect('/register')
         
         # Check if user already exists
         existing_user = User.query.filter_by(email=email).first()
@@ -58,17 +95,20 @@ def register():
     return render_template('register.html')
 
 @app.route('/logout')
-@login_required
 def logout():
     session.clear()
     flash("Logged out successfully", "success")
     return redirect('/login')
 
-# ---------------- DASHBOARD ----------------
+# ---------------- USER DASHBOARD ----------------
 
 @app.route('/', methods=['GET','POST'])
 @login_required
 def index():
+    # Redirect admin to admin panel
+    if session.get('is_admin'):
+        return redirect('/admin')
+    
     # ADD EXPENSE
     if request.method == 'POST':
         try:
@@ -214,7 +254,6 @@ def download_pdf():
             
             # Handle note text (ASCII safe)
             note_text = (e.note or "-")[:30]
-            # Remove non-ASCII characters
             note_text = ''.join(char if ord(char) < 128 else '?' for char in note_text)
             pdf.cell(80, 8, note_text, border=1)
             pdf.ln()
@@ -229,6 +268,29 @@ def download_pdf():
     response.headers['Content-Type'] = 'application/pdf'
     response.headers['Content-Disposition'] = 'attachment; filename=expenses.pdf'
     return response
+
+# ============================================================
+# SIMPLE ADMIN PANEL - READ ONLY
+# ============================================================
+
+@app.route('/admin')
+@admin_required
+def admin_panel():
+    # Get all users
+    users = User.query.order_by(User.created_at.desc()).all()
+    
+    # Get all expenses
+    expenses = Expense.query.order_by(Expense.created_at.desc()).all()
+    
+    # Statistics
+    total_users = len(users)
+    total_expenses = len(expenses)
+    
+    return render_template('admin_simple.html',
+                         users=users,
+                         expenses=expenses,
+                         total_users=total_users,
+                         total_expenses=total_expenses)
 
 
 if __name__ == '__main__':
