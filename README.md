@@ -97,6 +97,14 @@ expense-tracker/
 - [ ] Budget limits and alerts
 - [ ] Split expenses between users
 
+##  Live Demo
+
+[https://expense-tracker-sxf5.onrender.com]
+
+## Admin Access (for portfolio review)
+
+Demo admin credentials available on request.
+
 ## License
 
 MIT License - feel free to use this for learning or your own projects.
